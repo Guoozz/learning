@@ -7,7 +7,6 @@ client = redis.StrictRedis(host="localhost", port=6379)
 def cache(ex=10):
 
     def decorator(func):
-
         @functools.wraps(func)
         def _wrap(*args, **kwargs):
             key = func.__name__
