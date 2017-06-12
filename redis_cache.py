@@ -27,10 +27,10 @@ def cache(ex=10):
     return decorator
 
 
-@cache(ex=100)
+@cache(ex=10)
 def compute():
     import time
-    time.sleep(100)
+    time.sleep(10)
     return 3
 
 
