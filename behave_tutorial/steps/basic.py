@@ -1,8 +1,12 @@
+#! -*-coding:utf-8-*-
+
+from __future__ import unicode_literals
 try:
     from urllib.parse import urljoin
 except ImportError:
     from urlparse import urljoin
 
+import logging
 import requests
 
 from marshmallow.schema import Schema
@@ -162,6 +166,7 @@ class ClusterManager:
         return response
 
     def find_host_with_validation(self, **kwargs):
+        logging.info(kwargs)
         response = self.find_host(**kwargs)
         return self._validation_with_schema(response, FindHostSchema, strict=True)
 
@@ -207,159 +212,145 @@ class ClusterCreationManager:
 
     def __init__(
             self,
+            login_username=None,
+            login_password=None,
+            cluster_ip=None,
             oracle_home=None,
             oracle_user=None,
             grid_home=None,
             grid_user=None,
-            cluster_alias_name=None,
+            cluster_name=None,
             cluster_ssh_password=None,
             cluster_ssh_public_key=None,
             cluster_ssh_username=None,
             cluster_ssh_port=None,
-            monitor_user=None,
-            monitor_password=None
     ):
+
+        self.login_username = login_username
+        self.login_password = login_password
+        self._cluster_manager = ClusterManager(login_username, login_password)
+
         self.oracle_home = oracle_home
         self.oracle_user = oracle_user
         self.grid_home = grid_home
         self.grid_user = grid_user
-        self.cluster_alias_name = cluster_alias_name
+        self.cluster_name = cluster_name
         self.cluster_ssh_password = cluster_ssh_password
         self.cluster_ssh_public_key = cluster_ssh_public_key
         self.cluster_ssh_username = cluster_ssh_username
         self.cluster_ssh_port = cluster_ssh_port
-        self.monitor_user = monitor_user
-        self.monitor_password = monitor_password
+        self.cluster_ip = cluster_ip
 
-    def create_cluster(self):
-        pass
+    def create_cluster_with_password(self, monitor_user, monitor_password):
 
+        hosts = self._cluster_manager.find_host_with_validation(
+            host_ip=self.cluster_ip,
+            username=self.cluster_ssh_username,
+            gi_home=self.grid_home,
+            grid_user=self.grid_user,
+            oracle_user=self.oracle_user,
+            oracle_home=self.oracle_home,
+            ssh_port=self.cluster_ssh_port,
+            password=self.cluster_ssh_password
+        )
 
-def create_cluster():
-    """
-    :return: 创建集群返回该集群的`id`
-    """
-    cluster_manager = ClusterManager("admin", "admin")
-    oracle_home = "/opt/oracle/products/11.2.0"
-    gi_home = "/opt/grid/products/11.2.0"
-    oracle_user = 'oracle'
-    grid_user = 'grid'
-    cluster_alias_name = "test"
-    cluster_ssh_username = "root"
-    cluster_ssh_password = "cljslrl0620"
-    cluster_ssh_port = 22
+        resource_pool_hosts = [
+            {
+                "ip": host['ip'],
+                "username": self.cluster_ssh_username,
+                "password": self.cluster_ssh_password,
+                "ssh_port": self.cluster_ssh_port
+            }
+            for host in hosts['hosts']
+            ]
+        resource_pool = self._cluster_manager.find_resource_database_pool_with_validation(
+            hosts=resource_pool_hosts, oracle_home=self.oracle_home, oracle_user=self.oracle_user
+        )
 
-    hosts = cluster_manager.find_host_with_validation(
-        host_ip="10.10.200.1",
-        username="root",
-        gi_home=gi_home,
-        grid_user="grid",
-        oracle_user="oracle",
-        oracle_home=oracle_home,
-        ssh_port=22,
-        password="cljslrl0620",
-    )
+        database_host = [
+            {
+                'ip': host['ip'],
+                'username': self.cluster_ssh_username,
+                'password': self.cluster_ssh_password,
+                "ssh_port": self.cluster_ssh_port,
+                "vip": host['vip'],
+                "host_name": host['host_name']
+            }
+            for host in hosts['hosts']
+            ]
 
-    resource_pool_hosts = [
-        {
-            "ip": host['ip'],
-            "username": cluster_ssh_username,
-            "password": cluster_ssh_password,
-            "ssh_port": cluster_ssh_port
-        }
-        for host in hosts['hosts']
-    ]
-    resource_pool = cluster_manager.find_resource_database_pool_with_validation(
-        hosts=resource_pool_hosts, oracle_home=oracle_home, oracle_user=oracle_user
-    )
+        databases = self._cluster_manager.find_database_with_validation(
+            username=self.cluster_ssh_username,
+            oracle_home=self.oracle_home,
+            oracle_user=self.oracle_user,
+            gi_home=self.grid_home,
+            grid_user=self.grid_user,
+            hosts=database_host
+        )
 
-    database_host = [
-        {
-            'ip': host['ip'],
-            'username': 'root',
-            'password': "cljslrl0620",
-            "ssh_port": 22,
-            "vip": host['vip'],
-            "host_name": host['host_name']
-        }
-        for host in hosts['hosts']
-    ]
+        databases_connection = self._cluster_manager.get_database_connection_with_validation(
+            cluster_scan_ip=hosts['cluster_scan_ip'],
+            o_user=monitor_user,
+            o_pass=monitor_password,
+            databases=databases
+        )
+        # 获取连接正常的数据库
+        connection_health_databases = [
+            item for item in databases_connection
+            if False not in [inst['connected'] for inst in item['instances']]
+            ]
+        service_name_list = self._cluster_manager.get_database_service_name_with_validation(
+            cluster_scan_ip=hosts['cluster_scan_ip'],
+            o_user=monitor_user,
+            o_pass=monitor_password,
+            databases=connection_health_databases
+        )
 
-    databases = cluster_manager.find_database_with_validation(
-        username="root",
-        oracle_home=oracle_home,
-        oracle_user=oracle_user,
-        gi_home=gi_home,
-        grid_user=grid_user,
-        hosts=database_host
-    )
+        service_name_hash = {service['db_name']: service['service_name'] for service in service_name_list}
+        healthy_database_name_list = [db['db_name'] for db in connection_health_databases]
 
-    databases_connection = cluster_manager.get_database_connection_with_validation(
-        cluster_scan_ip=hosts['cluster_scan_ip'],
-        o_user="wq",
-        o_pass="oracle",
-        databases=databases
-    )
-    # 获取连接正常的数据库
-    connection_health_databases = [
-        item for item in databases_connection
-        if False not in [inst['connected'] for inst in item['instances']]
-    ]
-    service_name_list = cluster_manager.get_database_service_name_with_validation(
-        cluster_scan_ip=hosts['cluster_scan_ip'],
-        o_user="wq",
-        o_pass="oracle",
-        databases=connection_health_databases
-    )
+        healthy_databases = [item for item in databases if item['db_name'] in healthy_database_name_list]
+        for db in healthy_databases:
+            db['service_name'] = service_name_hash[db['db_name']]
 
-    service_name_hash = {service['db_name']: service['service_name'] for service in service_name_list}
-    healthy_database_name_list = [db['db_name'] for db in connection_health_databases]
+        create_cluster_hosts = [
+            {
+                'ip': host['ip'],
+                'username': self.cluster_ssh_username,
+                'password': self.cluster_ssh_password,
+                "ssh_port": self.cluster_ssh_port,
+                "vip": host['vip'],
+                "host_name": host['host_name'],
+                "connected": True,
+                "oracle_listener_port": host['oracle_listener_port'],
+                "pub_key": ""
+            }
+            for host in hosts['hosts']
+            ]
+        response = self._cluster_manager.create_cluster_with_validation(
+            cluster_name=hosts['cluster_name'],
+            cluster_alias_name=self.cluster_name,
+            oracle_home=self.oracle_home,
+            oracle_user=self.oracle_user,
+            o_user=monitor_user,
+            o_pass=monitor_password,
+            grid_user=self.grid_user,
+            gi_home=self.grid_home,
+            cluster_scan_ip=hosts['cluster_scan_ip'],
+            cluster_ssh_port=self.cluster_ssh_port,
+            cluster_ssh_password=self.cluster_ssh_password,
+            cluster_ssh_pub_key="",
+            cluster_ssh_user=self.cluster_ssh_username,
+            databases=healthy_databases,
+            pools=resource_pool,
+            hosts=create_cluster_hosts
+        )
 
-    healthy_databases = [item for item in databases if item['db_name'] in healthy_database_name_list]
-    for db in healthy_databases:
-        db['service_name'] = service_name_hash[db['db_name']]
+        return response
 
-    create_cluster_hosts = [
-        {
-            'ip': host['ip'],
-            'username': cluster_ssh_username,
-            'password': cluster_ssh_password,
-            "ssh_port": cluster_ssh_port,
-            "vip": host['vip'],
-            "host_name": host['host_name'],
-            "connected": True,
-            "oracle_listener_port": host['oracle_listener_port'],
-            "pub_key": ""
-        }
-        for host in hosts['hosts']
-    ]
-    cluster_manager.create_cluster_with_validation(
-        cluster_name=hosts['cluster_name'],
-        cluster_alias_name=cluster_alias_name,
-        oracle_home=oracle_home,
-        oracle_user=oracle_user,
-        o_user="wq",
-        o_pass="oracle",
-        grid_user=grid_user,
-        gi_home=gi_home,
-        cluster_scan_ip=hosts['cluster_scan_ip'],
-        cluster_ssh_port=22,
-        cluster_ssh_password="cljslrl0620",
-        cluster_ssh_pub_key="",
-        cluster_ssh_user="root",
-        databases=healthy_databases,
-        pools=resource_pool,
-        hosts=create_cluster_hosts
-    )
+    def get_cluster(self):
+        return self._cluster_manager.get_cluster_with_validation(self.cluster_name)
 
-    cluster = cluster_manager.get_cluster_with_validation(cluster_alias_name)
-    return cluster['cluster_id']
-
-
-def remove_cluster(cluster_id):
-    cluster_manager = ClusterManager('admin', 'admin')
-    cluster_manager.remove_cluster_with_validation(cluster_id)
-
-
-if __name__ == "__main__":
-    create_cluster()
+    def remove_cluster(self):
+        cluster = self.get_cluster()
+        return self._cluster_manager.remove_cluster_with_validation(cluster['cluster_id'])
